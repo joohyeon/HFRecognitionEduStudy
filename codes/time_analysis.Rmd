@@ -1,0 +1,193 @@
+---
+title: "R Notebook"
+output:
+  html_document:
+    df_print: paged
+editor_options:
+  chunk_output_type: inline
+---
+
+```{r message=FALSE}
+options(warn=-1)
+options(digits=3)
+
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+library(reshape2) 
+```
+
+```{r}
+#
+# load data - subject responses
+#
+response = read.csv(file = "./data/subject responses - accuracy analysis.csv", header=TRUE, sep=",")
+
+response$pre_post = factor(response$pre_post, levels=c('pretest','posttest'), labels = c("pretest", "posttest"))
+```
+
+```{r}
+
+# load data - user response time from activity logs
+resp_time = read.csv(file = "./data/subject activity logs - elapsed time analysis.csv", header=TRUE, sep=",")
+
+```
+
+```{r}
+
+boxplot(resp_time$elapsed_time_min,
+  ylab = "time (S)"
+)
+
+```
+
+```{r}
+# check upper and lower 5% of elapsed time to review a case
+lower_bound <- quantile(resp_time$elapsed_time_min, 0.050)
+upper_bound <- quantile(resp_time$elapsed_time_min, 0.950)  
+cat('\nlower_bound', lower_bound)
+cat('\nupper_bound', upper_bound)
+```
+
+```{r}
+# remove 5% of upper bound, above 10m 30 sec.
+resp_time = resp_time %>% filter(elapsed_time_min < upper_bound)
+```
+
+```{r}
+# join two dataframe
+data = response %>% 
+  inner_join(resp_time[c('user_id', 'quiz_id', 'elapsed_time_sec', 'elapsed_time_min')],by=c("user_id"="user_id", "qz_svy_id"="quiz_id"))
+
+```
+
+
+## Time analysis, reviewing surgical cases
+
+```{r}
+# analysis on time spent per surgical case with an without intervention. 
+#   pretest: no intervention
+#   posttest: with intervention
+
+pre_post_elapsed_time = data %>% 
+  group_by(study_group, pre_post, user_id) %>%
+  summarize(mean.elapsed_time = mean(elapsed_time_min),
+            sd.elapsed_time = sd(elapsed_time_min),
+            n.elapsed_time = n()) 
+  
+pre_post_elapsed_time_pvt = pre_post_elapsed_time %>%
+  select(-c(sd.elapsed_time, n.elapsed_time)) %>%
+  pivot_wider(names_from=pre_post, values_from = mean.elapsed_time) %>%
+  mutate(diff = posttest - pretest) 
+
+```
+
+
+
+
+```{r}
+# Check normality of the difference in each group 
+for (type in unique(pre_post_elapsed_time_pvt$study_group)) {
+  cat(type)
+  sub_data = pre_post_elapsed_time_pvt %>% filter(study_group == type)
+  print(shapiro.test(sub_data$diff))
+}
+
+
+```
+
+
+```{r}
+
+pre_post_elapsed_time_pvt %>%
+  group_by(study_group) %>%
+  summarize(mean_pre.elapsed_time = mean(pretest),
+            mean_post.elapsed_time = mean(posttest),
+            mean_diff.elapsed_time = mean(diff))
+
+
+```
+
+
+```{r}
+#
+#  functions for the lower and upper bounds of confidence interval 
+#
+lower_ci <- function(mean, se, n, conf_level = 0.95){
+  lower_ci <- mean - qt(1 - ((1 - conf_level) / 2), n - 1) * se
+}
+upper_ci <- function(mean, se, n, conf_level = 0.95){
+  upper_ci <- mean + qt(1 - ((1 - conf_level) / 2), n - 1) * se
+}
+```
+
+```{r}
+pre_post_elapsed_time_unpviot = pre_post_elapsed_time_pvt %>% 
+  melt(, id.vars=c("study_group", "user_id"), 
+       measure.vars = c("pretest", "posttest", "diff") )
+
+```
+
+
+```{r}
+
+pre_post_result = pre_post_elapsed_time_unpviot %>% 
+  group_by(study_group, variable) %>%
+  summarize(smean = round(mean(value), 3), 
+            ssd = sd(value),
+            n = n()) %>%
+  mutate(se = ssd / sqrt(n),
+         lower_ci = round(lower_ci(smean, se, n), 3),
+         upper_ci = round(upper_ci(smean, se, n), 3)) 
+
+pre_post_result
+```
+
+
+```{r}
+#
+# The paired t-test to measure the significance of the case review time 
+# (p-values in Table 2)
+#
+for (type in unique(pre_post_elapsed_time_pvt$study_group)) {
+  cat(type)
+  sub_data = pre_post_elapsed_time_pvt %>% filter(study_group == type)
+  mean_post = sub_data$posttest
+  mean_pre = sub_data$pretest
+  # print(type)
+  result = t.test(mean_post, mean_pre, paired = TRUE, alternative = "two.sided", exact = FALSE)
+  print(result)
+  print(result[3])
+}
+  
+```
+
+
+
+# Visualization
+
+```{r}
+# box-plot 
+plot1 = pre_post_elapsed_time %>%
+  ggplot(aes(x=pre_post, y=mean.elapsed_time, fill=study_group)) +
+  geom_boxplot() +
+  theme(legend.position = "bottom") +
+  theme(axis.title.x=element_blank()) +
+  theme(text = element_text(size=15)) +
+  ylab("Review time per case (min)") +
+  
+  scale_fill_manual(name="Intervention", 
+                     labels=c(expression(EB), expression(ML[DR]), expression(ML[IR])), 
+                     values=c("#999999", "#E69F00", "#56B4E9")) +
+ 
+  facet_wrap(~study_group) +
+  theme(strip.text = element_blank())
+
+ plot1
+```
+
+```{r}
+ggsave(filename = "time_spent_pre_post_per_group.png", width=8, height=4, device="png", dpi=200)
+```
+
+
